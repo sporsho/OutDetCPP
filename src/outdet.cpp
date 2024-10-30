@@ -91,7 +91,7 @@ torch::Tensor NHConvBlockImpl::forward(torch::Tensor data, torch::Tensor ind, to
 OutDetImpl::OutDetImpl(int num_classes, int depth, int kernel_size, int in_channels, int out_channels) : num_classes(num_classes),
 depth(depth), kernel_size(kernel_size), in_channels(in_channels), out_channels(out_channels){
     tree_kernel = int(kernel_size * kernel_size);
-    conv1 = NHConvBlock(kernel_size, in_channels, out_channels, true);
+    conv1 = NHConvBlock(tree_kernel, in_channels, out_channels, true);
     register_module("conv1", conv1);
     fc = torch::nn::Linear(torch::nn::LinearOptions(out_channels, num_classes).bias(true));
     register_module("fc", fc);
