@@ -29,6 +29,7 @@ in_channels(in_channels), out_channels(out_channels), bias(bias), init(init) {
 torch::Tensor NHConvImpl::forward(torch::Tensor points, torch::Tensor dist) {
     torch::Tensor sdata;
     if (init == true){
+//        std::cout << dw << std::endl;
         auto tmp = dw * dist;
         tmp = tmp.unsqueeze(-1);
         sdata = torch::cat({points, tmp}, 2);
@@ -41,6 +42,7 @@ torch::Tensor NHConvImpl::forward(torch::Tensor points, torch::Tensor dist) {
     }
     auto out = torch::einsum("ijk,klj->il", {sdata, weight});
     if (bias == true){
+//        std::cout << b << std::endl;
         return out + b;
     }
     else{

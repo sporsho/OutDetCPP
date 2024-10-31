@@ -11,6 +11,7 @@
 #include<helper_functions.h>
 #include<helper_cuda.h>
 #include<dlfcn.h>
+#include<filesystem>
 #include<stdlib.h>
 #include <assert.h>
 #include "src/knncuda.h"
@@ -19,13 +20,15 @@
 //#include <cuml/common/logger.hpp>
 //#include<cuml/neighbors/knn.hpp>
 using namespace torch::indexing;
+using namespace std::filesystem;
 bool load_cpp_weights(OutDet model){
     // load model weights
     torch::jit::script::Module cpp_module = torch::jit::load("/var/local/home/aburai/outdet_cpp/cpp_weights.pt");
     // nh conv layer 1
     assert(cpp_module.hasattr("convs.0.conv1.dw") == true && "Cannot read convs.0.conv1.dw");
     model->conv1->conv1->dw = cpp_module.attr("convs.0.conv1.dw").toTensor();
-    assert(cpp_module.hasattr("convs.0.conv1.b") == true && "Cannot read convs.0.conv1.b");
+//    std::cout << model->conv1->conv1->dw << std::endl;
+assert(cpp_module.hasattr("convs.0.conv1.b") == true && "Cannot read convs.0.conv1.b");
     model->conv1->conv1->b = cpp_module.attr("convs.0.conv1.b").toTensor();
     assert(cpp_module.hasattr("convs.0.conv1.weight") == true && "Cannot read convs.0.conv1.weight");
     model->conv1->conv1->weight = cpp_module.attr("convs.0.conv1.weight").toTensor();
@@ -74,7 +77,7 @@ int main(int argc, char **argv)
 {
     try{
         // set device
-        auto device = torch::kCUDA;
+        torch::Device device(torch::kCUDA, 0);
         // single point cloud
         const char* fname =  "/var/local/home/aburai/DATA/WADS2/sequences/11/velodyne/039498.bin";
         std::ifstream fin(fname, std::ios::binary);
@@ -86,19 +89,26 @@ int main(int argc, char **argv)
         // initial sizes
         long a_init = long(num_elements / 4);
         long b = 4;
+        auto mean = torch::tensor({0.3420934,  -0.01516175 ,-0.5889243 ,  9.875928}, torch::kFloat32).unsqueeze(0);
+        auto stddev = torch::tensor({25.845459,  18.93466,    1.5863657, 14.734034}, torch::kFloat32).unsqueeze(0);
+
+//        std::cout << mean << std::endl;
+
         auto pt_tensor = torch::from_blob(data, {a_init, 4}, torch::TensorOptions().dtype(torch::kFloat));
         torch::Tensor pt_xyz = pt_tensor.index({Slice(), Slice(None, 3)});
-
+//
         auto o_dist = torch::pow(pt_xyz, 2).sum(1);
-        std::cout << o_dist.sizes() << std::endl;
+//        std::cout << o_dist.sizes() << std::endl;
         auto selected_ind = torch::where(o_dist < 10 * 10)[0];
 //        auto o_dist = pt
-//        std::cout << selected_ind.sizes() << std::endl;
+//        std::cout << selected_ind<< std::endl;
         auto selected_data = pt_tensor.index({selected_ind});
         // sizes to be used
         float *selected_data_arr = selected_data.data_ptr<float>();
         long num_feat = 3;
-        int a = 30000;  // the code breaks at 40k points
+        int a = selected_data.size(0);  // the code breaks at 40k points
+        mean = mean.repeat({ a, 1});
+        stddev = stddev.repeat({a, 1});
         // data holder for points
         float points[a * num_feat];
         // copy points
@@ -119,7 +129,7 @@ int main(int argc, char **argv)
 
         float *knn_dist = (float*)malloc(a *a *  sizeof(float ));
 
-        std::cout << a_init << std::endl;
+//        std::cout << a_init << std::endl;
 
         kNN_dist(ref, a, query, a, num_feat, knn_dist);
 //        print_array(knn_dist, a, a, a);
@@ -127,23 +137,45 @@ int main(int argc, char **argv)
         torch::Tensor dist_tensor = torch::from_blob(knn_dist, {a, a}, options);
         dist_tensor = dist_tensor.to(device);
         auto [dist, ind] = dist_tensor.topk(9, 1, false, true);
-        std::cout << dist.sizes()<< " " << ind.sizes() << std::endl;
-        torch::Tensor inp = pt_tensor.index({Slice(None, a)});
+//        std::cout << dist.sizes()<< " " << ind.sizes() << std::endl;
 
+        auto inp = selected_data.sub(mean).div(stddev);
+//        torch::Tensor inp = pt_tensor.index({Slice(None, a)});
+        dist = torch::sqrt(dist) + 1.0;
 //        std::cout << inp << std::endl;
         // define model
         OutDet model(2, 1, 3, 4, 32);
         model->to(device);
-        auto out = model->forward(inp.to(device), dist.to(device), ind.to(device));
-//        std::cout << out << std::endl;
-//        torch::save(model->parameters(), "mymodel.pt");
-        std::cout << model->conv1->conv1->dw << std::endl;
         load_cpp_weights(model);
-        std::cout << model->conv1->conv1->dw << std::endl;
+        torch::NoGradGuard no_grad;
+        model->eval();
+        auto out = model->forward(inp.to(device), dist.to(device), ind.to(device));
+        out = out.argmax(1);
+        out = out.contiguous();
+        out = out.to(torch::kCPU);
+        long int * pred = out.data_ptr< long int>();
+         int counter = 0;
+        for (int i = 0; i < out.numel(); i++){
+            if (pred[i] == 1){
+                counter++;
+            }
+        }
+//        std::cout << out.numel() << std::endl;
+        std::cout << counter << std::endl;
+        //        std::cout << out << std::endl;
+//        torch::save(model->parameters(), "mymodel.pt");
+//        std::cout << model->conv1->conv1->dw << std::endl;
+
+////        std::cout << model->conv1->conv1->dw << std::endl;
+//        if ( !is_directory("../saved_weights") || !exists("../saved_weights")){
+//            create_directory("../saved_weights");
+//        }
+//        torch::save(model, "../saved_weights/outdet.pt");
+//            torch::load(model, "../saved_weights/outdet.pt");
+//        std::cout << model->conv1->conv1->dw << std::endl;
     }
     catch (const std::exception &ex){
         std::cerr << ex.what() << std::endl;
     }
-
     return 0;
 }
