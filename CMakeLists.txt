@@ -54,8 +54,6 @@ INCLUDE_DIRECTORIES(${COMMON_DIR})
 ADD_LIBRARY(cuda_comp src/knncuda.h src/knncuda.cu)
 SET_TARGET_PROPERTIES(cuda_comp PROPERTIES CUDA_RUNTIME_LIBRARY Shared)
 
-
-
 add_executable(outdet main.cpp src/outdet.cpp src/outdet.h)
 
 target_compile_features(outdet PUBLIC cxx_std_17)
