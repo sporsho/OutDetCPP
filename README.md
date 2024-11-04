@@ -2,6 +2,7 @@
 * Convert 3D-OutDet PyTorch model to C++ (done)
 * Data processing in CPP (on hold: using brute force solution)
 * Eval in CPP (done)
+* ONNX model (done)
 * Weight Conversion in CPP (done)
 * TensorRT + CPP (in 2 days)
 * ROS Integration (in 2 days)
