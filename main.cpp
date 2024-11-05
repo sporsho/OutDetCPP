@@ -14,11 +14,23 @@
 #include<filesystem>
 #include<stdlib.h>
 #include <assert.h>
+#include <filesystem>
 #include "src/knncuda.h"
 #include <torch/script.h>
+#include "NvInfer.h"
+#include "NvOnnxParser.h"
 //#include <rmm/cuda_stream_view.hpp>
 //#include <cuml/common/logger.hpp>
 //#include<cuml/neighbors/knn.hpp>
+using namespace nvinfer1;
+using namespace nvonnxparser;
+class Logger : public ILogger{
+    void log(Severity severity, const char* msg) noexcept override{
+        if (severity <= Severity::kWARNING){
+            std::cout << msg << std::endl;
+        }
+    }
+} logger;
 using namespace torch::indexing;
 using namespace std::filesystem;
 bool load_cpp_weights(OutDet model){
@@ -149,19 +161,19 @@ int main(int argc, char **argv)
         load_cpp_weights(model);
         torch::NoGradGuard no_grad;
         model->eval();
-        auto out = model->forward(inp.to(device), dist.to(device), ind.to(device));
-        out = out.argmax(1);
-        out = out.contiguous();
-        out = out.to(torch::kCPU);
-        long int * pred = out.data_ptr< long int>();
-         int counter = 0;
-        for (int i = 0; i < out.numel(); i++){
-            if (pred[i] == 1){
-                counter++;
-            }
-        }
-//        std::cout << out.numel() << std::endl;
-        std::cout << counter << std::endl;
+//        auto out = model->forward(inp.to(device), dist.to(device), ind.to(device));
+//        out = out.argmax(1);
+//        out = out.contiguous();
+//        out = out.to(torch::kCPU);
+//        long int * pred = out.data_ptr< long int>();
+//         int counter = 0;
+//        for (int i = 0; i < out.numel(); i++){
+//            if (pred[i] == 1){
+//                counter++;
+//            }
+//        }
+////        std::cout << out.numel() << std::endl;
+//        std::cout << counter << std::endl;
         //        std::cout << out << std::endl;
 //        torch::save(model->parameters(), "mymodel.pt");
 //        std::cout << model->conv1->conv1->dw << std::endl;
@@ -173,6 +185,61 @@ int main(int argc, char **argv)
 //        torch::save(model, "../saved_weights/outdet.pt");
 //            torch::load(model, "../saved_weights/outdet.pt");
 //        std::cout << model->conv1->conv1->dw << std::endl;
+        IBuilder* builder = createInferBuilder(logger);
+        INetworkDefinition* network = builder->createNetworkV2(0);
+        IParser* parser = createParser(*network, logger);
+        std::ifstream file("/var/local/home/aburai/outdet_cpp/outdet.onnx", std::ios::binary | std::ios::ate);
+        std::streamsize size = file.tellg();
+        file.seekg(0, std::ios::beg);
+        std::vector<char> buffer(size);
+        if (! file.read(buffer.data(), size)){
+            std::cout << "Error"<< std::endl;
+            throw std::runtime_error("Cannot read file");
+        }
+        auto success = parser->parse(buffer.data(), buffer.size());
+        if (!success){
+            throw std::runtime_error("failed to parse model");
+        }
+        const auto numInputs  = network->getNbInputs();
+        std::cout << "Number of inputs: " << numInputs << std::endl;
+        const auto input0batch = network->getInput(0)->getDimensions().d[0];
+        std::cout << "Batch Size: " << input0batch << std::endl;
+        // create build config
+        auto conf_succes = std::unique_ptr<IBuilderConfig>(builder->createBuilderConfig());
+        if (!conf_succes){
+            throw std::runtime_error("Cannot create build config");
+        }
+        // register single optimization profile
+        IOptimizationProfile* optProfile = builder->createOptimizationProfile();
+        for (int32_t i =0; i < numInputs; i++){
+            const auto input = network->getInput(i);
+            const auto inputName = input->getName();
+            const auto inputDims = input->getDimensions();
+            int32_t inputF = inputDims.d[1];
+            optProfile->setDimensions(inputName, OptProfileSelector::kMIN, Dims2(1, inputF));
+            optProfile->setDimensions(inputName, OptProfileSelector::kMAX, Dims2(1, inputF));
+            optProfile->setDimensions(inputName, OptProfileSelector::kOPT, Dims2(1, inputF));
+        }
+        conf_succes->addOptimizationProfile(optProfile);
+        // use default precision
+        cudaStream_t profileStream;
+        cudaStreamCreate(&profileStream);
+        conf_succes->setProfileStream(profileStream);
+//        IBuilderConfig* config = builder->createBuilderConfig();
+        conf_succes->setMemoryPoolLimit(MemoryPoolType::kWORKSPACE, 1U <<20);
+        conf_succes->setMemoryPoolLimit(MemoryPoolType::kTACTIC_SHARED_MEMORY, 48 << 10);
+        std::unique_ptr<IHostMemory> plan{builder->buildSerializedNetwork(*network, *conf_succes)};
+//        IHostMemory* serializedModel = builder->buildSerializedNetwork(*network, *conf_succes);
+
+        // write engine to disk
+        const auto enginePath = "/var/local/home/aburai/outdet_cpp/outdet.trt";
+        std::ofstream outfile(enginePath, std::ofstream::binary);
+        outfile.write(reinterpret_cast<const char *>(plan->data()), plan->size());
+
+        // destroy cuda steam at the end
+        cudaStreamDestroy(profileStream);
+
+
     }
     catch (const std::exception &ex){
         std::cerr << ex.what() << std::endl;
