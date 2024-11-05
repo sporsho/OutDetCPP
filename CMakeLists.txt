@@ -1,5 +1,9 @@
 cmake_minimum_required(VERSION 3.26.4 FATAL_ERROR)
+set(CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake" ${CMAKE_MODULE_PATH})
 
+if (NOT TensorRT_DIR)
+    set(TensorRT_DIR /usr/src/tensorrt)
+endif()
 # ------------- configure rapids-cmake --------------#
 #
 #include(/var/local/home/aburai/outdet_cpp/cmake/thirdparty/fetch_rapids.cmake)
@@ -26,6 +30,8 @@ find_package(Torch REQUIRED)
 find_package(CUDA 11.7 REQUIRED)
 find_package(CUDAToolkit REQUIRED)
 find_package(Threads REQUIRED)
+find_package(TensorRT REQUIRED)
+find_package(fmt REQUIRED)
 
 # ------------- configure cuvs -----------------#
 
@@ -57,7 +63,7 @@ SET_TARGET_PROPERTIES(cuda_comp PROPERTIES CUDA_RUNTIME_LIBRARY Shared)
 add_executable(outdet main.cpp src/outdet.cpp src/outdet.h)
 
 target_compile_features(outdet PUBLIC cxx_std_17)
-target_link_libraries(outdet PUBLIC ${TORCH_LIBRARIES} ${CUDA_LIBRARIES})
+target_link_libraries(outdet PUBLIC ${TORCH_LIBRARIES} ${CUDA_LIBRARIES} ${TensorRT_LIBRARIES} fmt::fmt)
 target_link_libraries(outdet PUBLIC cudart)
 target_link_libraries(outdet PUBLIC cuda)
 #target_link_libraries(outdet PUBLIC stdlib)

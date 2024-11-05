@@ -85,6 +85,12 @@ assert(cpp_module.hasattr("convs.0.conv1.b") == true && "Cannot read convs.0.con
 return true;
 }
 
+struct InferDeleter{
+    template<typename T>
+    void operator()(T* obj) const {
+        delete obj;
+    }
+};
 int main(int argc, char **argv)
 {
     try{
@@ -236,6 +242,10 @@ int main(int argc, char **argv)
         std::ofstream outfile(enginePath, std::ofstream::binary);
         outfile.write(reinterpret_cast<const char *>(plan->data()), plan->size());
 
+        std::shared_ptr<IRuntime> mRuntime;
+        std::shared_ptr<ICudaEngine> mEngine;
+        mRuntime = std::shared_ptr<IRuntime>(createInferRuntime(logger));
+        mEngine = std::shared_ptr<ICudaEngine>(mRuntime->deserializeCudaEngine(plan->data(), plan->size()), InferDeleter());
         // destroy cuda steam at the end
         cudaStreamDestroy(profileStream);
 

@@ -4,7 +4,8 @@
 * Eval in CPP (done)
 * ONNX model (done)
 * Weight Conversion in CPP (done)
-* TensorRT + CPP (in 2 days)
+* TensorRT + CPP: Model conversion (done)
+* TensorRT + CPP: inference (in 2 days)
 * ROS Integration (in 2 days)
 * Docker Integration (in 1 days)
 
