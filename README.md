@@ -8,6 +8,9 @@
 * ROS Integration (in 2 days)
 * Docker Integration (in 1 days)
 
+## Onnx Model from OutDet (image from Netron app)
+![ONNX model from outdet](outdet.onnx.png "Onnx Model")
+
 
 ## How to Build 
 ``` 
