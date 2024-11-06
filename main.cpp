@@ -19,6 +19,7 @@
 #include <torch/script.h>
 #include "NvInfer.h"
 #include "NvOnnxParser.h"
+#include<cuda_runtime.h>
 //#include <rmm/cuda_stream_view.hpp>
 //#include <cuml/common/logger.hpp>
 //#include<cuml/neighbors/knn.hpp>
@@ -91,6 +92,8 @@ struct InferDeleter{
         delete obj;
     }
 };
+template <typename T>
+using TRTUniquePointer = std::unique_ptr<T, InferDeleter>;
 int main(int argc, char **argv)
 {
     try{
@@ -125,6 +128,7 @@ int main(int argc, char **argv)
         float *selected_data_arr = selected_data.data_ptr<float>();
         long num_feat = 3;
         int a = selected_data.size(0);  // the code breaks at 40k points
+        int BatchSize = a;
         mean = mean.repeat({ a, 1});
         stddev = stddev.repeat({a, 1});
         // data holder for points
@@ -223,17 +227,18 @@ int main(int argc, char **argv)
             const auto inputDims = input->getDimensions();
             int32_t inputF = inputDims.d[1];
             optProfile->setDimensions(inputName, OptProfileSelector::kMIN, Dims2(1, inputF));
-            optProfile->setDimensions(inputName, OptProfileSelector::kMAX, Dims2(1, inputF));
-            optProfile->setDimensions(inputName, OptProfileSelector::kOPT, Dims2(1, inputF));
+            optProfile->setDimensions(inputName, OptProfileSelector::kMAX, Dims2(250000, inputF));
+            optProfile->setDimensions(inputName, OptProfileSelector::kOPT, Dims2(30000, inputF));
         }
         conf_succes->addOptimizationProfile(optProfile);
         // use default precision
         cudaStream_t profileStream;
         cudaStreamCreate(&profileStream);
         conf_succes->setProfileStream(profileStream);
+
 //        IBuilderConfig* config = builder->createBuilderConfig();
-        conf_succes->setMemoryPoolLimit(MemoryPoolType::kWORKSPACE, 1U <<20);
-        conf_succes->setMemoryPoolLimit(MemoryPoolType::kTACTIC_SHARED_MEMORY, 48 << 10);
+        conf_succes->setMemoryPoolLimit(MemoryPoolType::kWORKSPACE, 1024*1024*1024);
+        conf_succes->setMemoryPoolLimit(MemoryPoolType::kTACTIC_SHARED_MEMORY, 1024*1024*1024);
         std::unique_ptr<IHostMemory> plan{builder->buildSerializedNetwork(*network, *conf_succes)};
 //        IHostMemory* serializedModel = builder->buildSerializedNetwork(*network, *conf_succes);
 
@@ -246,8 +251,88 @@ int main(int argc, char **argv)
         std::shared_ptr<ICudaEngine> mEngine;
         mRuntime = std::shared_ptr<IRuntime>(createInferRuntime(logger));
         mEngine = std::shared_ptr<ICudaEngine>(mRuntime->deserializeCudaEngine(plan->data(), plan->size()), InferDeleter());
+        // create context
+//        std::shared_ptr<IExecutionContext> context
+        TRTUniquePointer<IExecutionContext> context(mEngine->createExecutionContext(), InferDeleter());
+        // create buffer object
+        std::vector<void *> m_buffers;
+        std::vector<int32_t > m_outputLengths{};
+        std::vector<int32_t> m_inputDims;
+        std::vector<int32_t> m_outputDims;
+        std::vector<std::string> m_IOTensorNames;
+//        BufferManager buffer(mEngine);
+        cudaStream_t stream;
+        m_buffers.resize(mEngine->getNbIOTensors());
+        auto err = cudaStreamCreate(&stream);
+        // first input
+        int32_t m_inputBatchSize;
+        int32_t  maxBatchSize =250000;
+        Dims2 inp1Dims = {BatchSize, 4};
+        for (int i=0; i< mEngine->getNbIOTensors(); i++){
+            const auto tensorName = mEngine->getIOTensorName(i);
+//            std::cout << tensorName << std::endl;
+            m_IOTensorNames.emplace_back(tensorName);
+            const auto tensorType = mEngine->getTensorIOMode(tensorName);
+            const auto tensorShape = mEngine->getTensorShape(tensorName);
+            const auto tensorDataType = mEngine->getTensorDataType(tensorName);
+
+            if (tensorType == TensorIOMode::kINPUT){
+                m_inputDims.emplace_back(tensorShape.d[1]);
+                m_inputBatchSize = tensorShape.d[0];
+                std::cout << tensorShape.d[1] << std::endl;
+
+            }
+            else if (tensorType == TensorIOMode::kOUTPUT){
+                if (tensorDataType == DataType::kFLOAT){
+                    std::cout << "float out " <<tensorShape.d[1] << std::endl;
+                    m_outputDims.push_back(tensorShape.d[1]);
+                    m_outputLengths.push_back(tensorShape.d[1]);
+                    auto err = cudaMallocAsync(&m_buffers[i], tensorShape.d[1] * maxBatchSize * sizeof(float), stream);
+                    if (err != cudaSuccess){
+                        std::cout << err << std::endl;
+                    }
+                }
+            }
+        }
+
+
         // destroy cuda steam at the end
+        cudaStreamSynchronize(stream);
+        cudaStreamDestroy(stream);
+//        const auto batchSize = -1;
+        Dims2 inp1Shape = Dims2(BatchSize, 4);
+        Dims2 inp2Shape = Dims2(BatchSize, 9);
+        Dims2 inp3Shape = Dims2(BatchSize, 9);
+        context->setInputShape("points", inp1Dims);
+        context->setInputShape("dist", inp2Shape);
+        context->setInputShape("indices", inp3Shape);
+        m_buffers[0] = (void *)inp.to(device).data_ptr();
+        m_buffers[1] = (void *)dist.to(device).data_ptr();
+        m_buffers[2] = (void *)ind.to(device).data_ptr();
+        // set the address of input and output buffer
+        context->setTensorAddress("points", m_buffers[0]);
+        context->setTensorAddress("dist", m_buffers[1]);
+        context->setTensorAddress("indices", m_buffers[2]);
+        context->setTensorAddress("out", m_buffers[3]);
+        // infer
+        auto status = context->enqueueV3(profileStream);
+        float *rt_out = (float *)malloc(sizeof(float) * BatchSize * 2);
+        cudaMemcpyAsync(rt_out, m_buffers[3], sizeof(float) * BatchSize * 2, cudaMemcpyDeviceToHost);
+        torch::Tensor tensor_out = torch::from_blob(rt_out, {BatchSize, 2}, torch::TensorOptions().dtype(torch::kFloat));
         cudaStreamDestroy(profileStream);
+
+        auto out = tensor_out.argmax(1);
+        out = out.contiguous();
+        out = out.to(torch::kCPU);
+        long int * pred = out.data_ptr< long int>();
+         int counter = 0;
+        for (int i = 0; i < out.numel(); i++){
+            if (pred[i] == 1){
+                counter++;
+            }
+        }
+        std::cout << counter << std::endl;
+
 
 
     }
