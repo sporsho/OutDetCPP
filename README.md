@@ -9,7 +9,7 @@
 * ROS Integration (in 2 days)
 * Docker Integration (in 1 days)
 
-## Onnx Model from OutDet (image from Netron app)
+## TensorRT Engine from ONNX (image from Netron app)
 ![ONNX model from outdet](outdet.onnx.png "Onnx Model")
 
 
@@ -20,4 +20,9 @@ cd build
 cmake -DCMAKE_PREFIX_PATH=/var/local/home/aburai/outdet_cpp/libtorch -D CMAKE_CUDA_COMPILER=$(which nvcc) ..
 make
 
+```
+
+## Docker
+``` 
+docker run --rm -it --entrypoint "/bin/bash" --mount src=/var/local/home/aburai/outdet_cpp,target=/outdet,type=bind roadview
 ```
